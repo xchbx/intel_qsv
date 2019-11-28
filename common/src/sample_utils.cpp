@@ -477,6 +477,12 @@ mfxStatus CSmplBitstreamWriter::WriteNextFrame(mfxBitstream *pMfxBitstream, bool
 
     nBytesWritten = (mfxU32)fwrite(pMfxBitstream->Data + pMfxBitstream->DataOffset, 1, pMfxBitstream->DataLength, m_fSource);
     MSDK_CHECK_NOT_EQUAL(nBytesWritten, pMfxBitstream->DataLength, MFX_ERR_UNDEFINED_BEHAVIOR);
+	// print encoding progress to console every certain number of frames (not to affect performance too much)
+	
+	if (isPrint && (0 == (m_nProcessedFramesNum % 10)))
+	{
+		msdk_printf(MSDK_STRING("										offset=[%u] dataLen=%d\r"), pMfxBitstream->DataOffset, pMfxBitstream->DataLength);
+	}
 
     // mark that we don't need bit stream data any more
     pMfxBitstream->DataLength = 0;
@@ -486,10 +492,64 @@ mfxStatus CSmplBitstreamWriter::WriteNextFrame(mfxBitstream *pMfxBitstream, bool
     // print encoding progress to console every certain number of frames (not to affect performance too much)
     if (isPrint && (1 == m_nProcessedFramesNum  || (0 == (m_nProcessedFramesNum % 100))))
     {
-        msdk_printf(MSDK_STRING("Frame number: %u\r"), m_nProcessedFramesNum);
+        msdk_printf(MSDK_STRING("---Frame number:------->[%u]\r"), m_nProcessedFramesNum);
     }
 
     return MFX_ERR_NONE;
+}
+
+mfxStatus CSmplBitstreamWriter::SndBitstream(mfxBitstream* pMfxBitstream)
+{
+	MSDK_CHECK_POINTER(pMfxBitstream, MFX_ERR_NULL_PTR);
+	mfxU32 nBytesWritten = 0;
+	mfxBitstream* pBitstream = new mfxBitstream();
+	if(pBitstream != nullptr)
+	{
+		pBitstream->Data = new mfxU8[pMfxBitstream->DataLength]();
+		pBitstream->DataLength =pMfxBitstream->DataLength;
+		pBitstream->DataOffset = pMfxBitstream->DataOffset;
+		if(pBitstream->Data != nullptr)
+		{
+			memcpy(pBitstream->Data + pBitstream->DataOffset
+				, pMfxBitstream->Data + pMfxBitstream->DataOffset
+				, pMfxBitstream->DataLength);
+		}
+	}
+	else
+	{
+		pMfxBitstream->DataLength = 0;
+		m_nProcessedFramesNum++;
+		return  MFX_ERR_MORE_DATA;
+	}
+
+	m_outQueue.enqueue(pBitstream);
+
+	// print encoding progress to console every certain number of frames (not to affect performance too much)
+	//if (1 == m_nProcessedFramesNum || (0 == (m_nProcessedFramesNum % 100)))
+	{
+		msdk_printf(MSDK_STRING("Frame number:[%u],dataLen=%u\r"), m_nProcessedFramesNum, pBitstream->DataLength);
+	}
+
+	// mark that we don't need bit stream data any more
+	pMfxBitstream->DataLength = 0;
+	m_nProcessedFramesNum++;
+
+	return MFX_ERR_NONE;
+
+}
+
+
+mfxStatus CSmplBitstreamWriter::GetBitstream(mfxBitstream* &pBitstream)
+{
+	bool found = m_outQueue.try_dequeue(pBitstream);
+	if (found && nullptr != pBitstream)
+	{
+		return MFX_ERR_NONE;
+	}
+	else 
+	{
+		return MFX_ERR_MORE_DATA;
+	}	
 }
 
 
@@ -1335,7 +1395,7 @@ mfxStatus InitMfxBitstream(mfxBitstream* pBitstream, mfxU32 nSize)
     WipeMfxBitstream(pBitstream);
 
     //prepare buffer
-    pBitstream->Data = new mfxU8[nSize];
+    pBitstream->Data = new mfxU8[nSize]();
     MSDK_CHECK_POINTER(pBitstream->Data, MFX_ERR_MEMORY_ALLOC);
 
     pBitstream->MaxLength = nSize;

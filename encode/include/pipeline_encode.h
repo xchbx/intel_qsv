@@ -43,6 +43,7 @@ or https://software.intel.com/en-us/media-client-solutions-support.
 #include "plugin_loader.h"
 
 #include "preset_manager.h"
+#include "concurrentqueue.h"
 
 #if defined (ENABLE_V4L2_SUPPORT)
 #include "v4l2_util.h"
@@ -309,6 +310,7 @@ struct sTask
     mfxStatus Close();
 };
 
+
 class CEncTaskPool
 {
 public:
@@ -352,6 +354,9 @@ public:
     virtual mfxStatus ResetDevice();
 
     void SetNumView(mfxU32 numViews) { m_nNumView = numViews; }
+	mfxStatus SndFrame(frame_desc_t* frame);
+	mfxStatus GetBitstreams(mfxBitstream* &pBitstream);
+
     virtual void  PrintInfo();
 
     void InitV4L2Pipeline(sInputParams *pParams);
@@ -451,6 +456,9 @@ protected:
     bool   m_bSingleTexture;
 
     mfxEncodeCtrl m_encCtrl;
+	moodycamel::ConcurrentQueue<frame_desc_t*> m_readyQueue;
+	Mutex   m_lock;
+	FILE * fou;
 
     CTimeStatisticsReal m_statOverall;
     CTimeStatisticsReal m_statFile;
@@ -485,6 +493,7 @@ protected:
     virtual MFXVideoENCODE* GetFirstEncoder(){return m_pmfxENC;}
 
     virtual mfxU32 FileFourCC2EncFourCC(mfxU32 fcc);
+	mfxStatus GetFrame(mfxFrameSurface1* pSurf);
 };
 
 #endif // __PIPELINE_ENCODE_H__

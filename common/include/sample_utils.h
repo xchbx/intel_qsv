@@ -47,6 +47,7 @@ or https://software.intel.com/en-us/media-client-solutions-support.
 #include "avc_spl.h"
 #include "avc_headers.h"
 #include "avc_nal_spl.h"
+#include "concurrentqueue.h"
 
 
 // A macro to disallow the copy constructor and operator= functions
@@ -116,6 +117,59 @@ bool IsDecodeCodecSupported(mfxU32 codecFormat);
 bool IsEncodeCodecSupported(mfxU32 codecFormat);
 bool IsPluginCodecSupported(mfxU32 codecFormat);
 
+class Mutex {
+public:
+	Mutex() {
+		::InitializeCriticalSection(&mutex);
+	}
+
+	~Mutex() {
+		::DeleteCriticalSection(&mutex);
+	}
+
+	void lock() {
+		::EnterCriticalSection(&mutex); // This function has no return value
+	}
+
+	bool trylock() {
+		return (TryEnterCriticalSection(&mutex) == TRUE);
+	}
+
+	void unlock() {
+		::LeaveCriticalSection(&mutex);
+	}
+	CRITICAL_SECTION mutex;
+private: // mutex using CRITICAL_SECTION, copying is forbidden
+	Mutex& operator = (const Mutex& R);
+	Mutex(const Mutex& R);
+};
+
+class AutoLock
+{
+public:
+	AutoLock(Mutex& lock) : _lock(lock) {
+		_lock.lock();
+	}
+	virtual ~AutoLock() {
+		_lock.unlock();
+	}
+
+private:
+	Mutex& _lock;
+};
+
+typedef struct frame_desc
+{
+	unsigned char*	yuvBuf[3];
+
+	unsigned int	lumaWidth;
+	unsigned int	lumaHeight;
+
+	unsigned long   lumaStride;
+	unsigned long   chromaStride;
+
+} frame_desc_t;
+
 class CSmplYUVReader
 {
 public :
@@ -147,13 +201,18 @@ public :
     virtual mfxStatus Init(const msdk_char *strFileName);
     virtual mfxStatus WriteNextFrame(mfxBitstream *pMfxBitstream, bool isPrint = true);
     virtual mfxStatus Reset();
+	virtual mfxStatus SndBitstream(mfxBitstream* pMfxBitstream);
+	virtual mfxStatus GetBitstream(mfxBitstream*& pBitstream);
     virtual void Close();
     mfxU32 m_nProcessedFramesNum;
+	moodycamel::ConcurrentQueue<mfxBitstream*> m_outQueue;
 
 protected:
     FILE*       m_fSource;
     bool        m_bInited;
     msdk_string m_sFile;
+	Mutex   m_lock;
+
 };
 
 class CSmplYUVWriter

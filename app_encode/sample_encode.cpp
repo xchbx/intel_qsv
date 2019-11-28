@@ -27,6 +27,8 @@ or https://software.intel.com/en-us/media-client-solutions-support.
 #include <string>
 #include "version.h"
 #include "ConfigFile.h"
+#include <windows.h>
+#include <stdio.h>
 
 #define VAL_CHECK(val, argIdx, argName) \
 { \
@@ -223,7 +225,7 @@ mfxStatus ParseInputString(sInputParams* pParams)
 
 #if 1
 	msdk_printf(MSDK_STRING("[DEBUG]ParseInputString ----------------------------------------------IN\n"));
-	Config config("config.txt");
+	Config config("D:\\work\\test\\intel_qsv\\intel_qsv\\_build\\x64\\Debug\\encode.cfg");
 	std::string setting;
 	printf("InputFile : %s\n", config.Read<std::string>("InputFile").c_str());
 	printf("OutputFile : %s\n", config.Read<std::string>("OutputFile").c_str());
@@ -305,14 +307,14 @@ mfxStatus ParseInputString(sInputParams* pParams)
 	
 	if (!config.Read<std::string>("InputFile").empty())
 	{
-		memset(ws,sizeof(wchar_t),256);
+		memset(ws, 0x0, sizeof(wchar_t) * 256);
 		swprintf(ws, 256, L"%hs", config.Read<std::string>("InputFile").c_str());
 		pParams->InputFiles.push_back(ws);
 	}
 	
 	if (!config.Read<std::string>("OutputFile").empty())
 	{
-		memset(ws, sizeof(wchar_t), 256);
+		memset(ws, 0x0,sizeof(wchar_t)*256);
 		swprintf(ws, 256, L"%hs", config.Read<std::string>("OutputFile").c_str());
 		//printf("[debug][CSmplBitstreamWriter::Init]--------------------ws[wchar_t]=%ls,ws[char]=%s\r\n", ws, ws);
 		pParams->dstFileBuff.push_back(_T(".\\enc.h265"));
@@ -569,7 +571,48 @@ CEncodingPipeline* CreatePipeline(const sInputParams& params)
     }
 }
 
+static int ReadFrame(FILE* inputFile,frame_desc_t* inputFrame)
+{
+	size_t readCount;
 
+	readCount = fread(
+		inputFrame->yuvBuf[0],
+		1,
+		inputFrame->lumaHeight * inputFrame->lumaWidth,
+		inputFile);
+
+	if (readCount != inputFrame->lumaHeight * inputFrame->lumaWidth)
+	{
+		return -1;
+	}
+
+	readCount = fread(
+		inputFrame->yuvBuf[1],
+		1,
+		inputFrame->lumaHeight * inputFrame->lumaWidth / 4,
+		inputFile);
+
+	if (readCount != inputFrame->lumaHeight * inputFrame->lumaWidth / 4)
+	{
+		return -2;
+	}
+
+	readCount = fread(
+		inputFrame->yuvBuf[2],
+		1,
+		inputFrame->lumaHeight * inputFrame->lumaWidth / 4,
+		inputFile);
+
+	if (readCount != inputFrame->lumaHeight * inputFrame->lumaWidth / 4)
+	{
+		return -3;
+	}
+
+	return 0;
+
+}
+
+static long int tnt = 0;
 #if defined(_WIN32) || defined(_WIN64)
 int _tmain(int argc, msdk_char *argv[])
 #else
@@ -583,7 +626,7 @@ int main(int argc, char *argv[])
 
     // Parsing Input stream workign with presets
     sts = ParseInputString(&Params);
-	//printf("\r\n----debug][main]--------------------size=%d ^^^ dstFileBuff[wchar_t]=%ls\r\n", Params.dstFileBuff.size(), Params.dstFileBuff[0]);
+	//printf("\r\n----debug][main]--------------------size=%d dstFileBuff[wchar_t]=%ls\r\n", Params.dstFileBuff.size(), Params.dstFileBuff[0]);
     ModifyParamsUsingPresets(Params);
 
     MSDK_CHECK_PARSE_RESULT(sts, MFX_ERR_NONE, 1);
@@ -602,7 +645,92 @@ int main(int argc, char *argv[])
 
     pPipeline->PrintInfo();
     msdk_printf(MSDK_STRING("[DEBUG]--->Processing started\n"));
+#if 1
+	std::thread sndFrameThread([&]() {
 
+		printf("\r\n----debug][main]--------------------size=%d dstFileBuff[wchar_t]=%ls\r\n", Params.dstFileBuff.size(), Params.dstFileBuff[0]);
+		FILE* fp = fopen("D:\\work\\test\\intel_qsv\\intel_qsv\\_build\\x64\\Debug\\sc_desktop_1920x1080_60_8bit_420.yuv","rb");
+		if (fp == NULL)
+		{
+			fprintf(stderr , "fopen() failed . errno = %d\n",errno);
+			perror("fopen()");
+			exit(1);
+		}
+		do {
+			//@@@ new frame;
+			frame_desc_t* inputFrame = new frame_desc_t;
+			if (inputFrame)
+			{
+				int iLen = 1920 * 1080;
+				inputFrame->yuvBuf[0] = new unsigned char[iLen];
+				inputFrame->yuvBuf[1] = new unsigned char[iLen / 4];
+				inputFrame->yuvBuf[2] = new unsigned char[iLen / 4];
+
+				inputFrame->lumaHeight = 1080;
+				inputFrame->lumaWidth = 1920;
+				inputFrame->lumaStride = 1920;
+				inputFrame->chromaStride = 1920 / 2;
+			}
+			if (!ReadFrame(fp, inputFrame))
+			{
+				///@@@ snd frame
+				pPipeline->SndFrame(inputFrame);
+			}else {
+				if (inputFrame->yuvBuf[0]) delete inputFrame->yuvBuf[0];
+				if (inputFrame->yuvBuf[1]) delete inputFrame->yuvBuf[1];
+				if (inputFrame->yuvBuf[2]) delete inputFrame->yuvBuf[2];
+				if (inputFrame) delete inputFrame;
+				break;
+			}
+			
+			
+			Sleep(1*10);
+		} while (1);
+	});
+	//sndFrameThread.detach();
+
+	std::thread getBitstreamThread([&]() {
+
+		mfxStatus sts = MFX_ERR_NONE;
+		
+		FILE* fp = fopen("D:\\work\\test\\intel_qsv\\intel_qsv\\_build\\x64\\Debug\\saveEnc.h265","wb");
+		if (fp == NULL)
+		{
+			fprintf(stderr , "fopen() failed . errno = %d\n",errno);
+			perror("fopen()");
+			exit(1);
+		}
+		do {
+			//@@@
+			mfxBitstream *pBitstream=nullptr;
+			sts = pPipeline->GetBitstreams(pBitstream);
+			if (sts == MFX_ERR_NONE && nullptr != pBitstream->Data)
+			{
+				tnt = 0;
+				fwrite(pBitstream->Data + pBitstream->DataOffset,1, pBitstream->DataLength, fp);
+				if (pBitstream->Data) delete[](pBitstream->Data);
+				pBitstream->Data = nullptr;
+				pBitstream->DataLength = 0;
+				if (pBitstream) delete pBitstream;
+				Sleep(1 * 10);
+			}
+			else 
+			{
+				Sleep(1 * 1000);
+				tnt++;
+				if(tnt >= 3)printf("222[DEBUG]--->getBitstreamThread---------------(tnt=%d)sts=%d\r\n",tnt, sts);
+				if(tnt>=3)
+				{
+					tnt = 0;
+					break;
+				}
+			}
+			
+		} while (1);
+	});
+
+
+#endif
     for (;;)
     {
         sts = pPipeline->Run();
@@ -620,13 +748,15 @@ int main(int argc, char *argv[])
         else
         {
             MSDK_CHECK_STATUS(sts, "pPipeline->Run failed");
+			msdk_printf(MSDK_STRING("\r\n\n[DEBUG]--->Processing end\n"));
             break;
         }
     }
 
-    pPipeline->Close();
+    //pPipeline->Close();
 
-    msdk_printf(MSDK_STRING("\n[DEBUG]--->Processing finished\n"));
-
+    msdk_printf(MSDK_STRING("\r\n\n[DEBUG]--->Processing finished\n"));
+	sndFrameThread.join();
+	getBitstreamThread.join();
     return 0;
 }

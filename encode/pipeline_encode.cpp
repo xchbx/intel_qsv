@@ -318,10 +318,7 @@ mfxStatus sTask::Close()
 mfxStatus sTask::WriteBitstream()
 {
     if (pWriter)
-    {
-    	//return pWriter->WriteNextFrame(&mfxBS);
-		return pWriter->SndBitstream(&mfxBS);
-    }
+        return pWriter->WriteNextFrame(&mfxBS);
     else
         return MFX_ERR_NONE;
 }
@@ -1264,22 +1261,11 @@ CEncodingPipeline::CEncodingPipeline()
     m_bInsertIDR = false;
 
     m_bIsFieldSplitting = false;
-
-	char outname[512] = { 0, };
-	memset(outname, 0, sizeof(outname));
-	sprintf_s(outname, "test_NV12.yuv");
-	fou = fopen(outname, "wb+");
-	if (fou == nullptr)
-	{
-		fprintf(stderr, "fopen() failed . errno = %d\n", errno);
-		perror("fopen()");
-	}
 }
 
 CEncodingPipeline::~CEncodingPipeline()
 {
     Close();
-	if (fou) fclose(fou);
 }
 
 mfxStatus CEncodingPipeline::InitFileWriter(CSmplBitstreamWriter **ppWriter, const msdk_char *filename)
@@ -2372,28 +2358,25 @@ static unsigned long t = 0;
 mfxStatus CEncodingPipeline::SndFrame(frame_desc_t* frame)
 {
 	//printf("[DEBUG]--->CEncodingPipeline::SndFrame Cnt(%d)\r\n", ++t);
-	AutoLock l(m_lock);
 	m_readyQueue.enqueue(frame);
 	return MFX_ERR_NONE;
 }
 
 mfxStatus CEncodingPipeline::GetFrame(mfxFrameSurface1* pSurf)
 {
+	//printf("[DEBUG]--->CEncodingPipeline::GetFrame Cnt(%d)\r\n", t);
 	mfxStatus sts = MFX_ERR_NONE;
 	MSDK_CHECK_POINTER(pSurf, MFX_ERR_NULL_PTR);
-	mfxU32 i;
-	mfxU16 w, h, pitch;
-	mfxU8* ptr_y;
-	mfxU8* ptr_uv;
+	mfxU32 nBytesRead;
+	mfxU16 w, h, i, pitch;
+	mfxU8* ptr, * ptr2;
 	mfxFrameInfo& pInfo = pSurf->Info;
 	mfxFrameData& pData = pSurf->Data;
 
 	frame_desc_t* pFrame;
-	AutoLock l(m_lock);
 	bool found = m_readyQueue.try_dequeue(pFrame);
 	if (found)
 	{
-		//printf("[DEBUG]--->CEncodingPipeline::GetFrame Cnt(%d)\r\n", ++t);
 		if (pInfo.CropH > 0 && pInfo.CropW > 0)
 		{
 			w = pInfo.CropW;
@@ -2405,54 +2388,55 @@ mfxStatus CEncodingPipeline::GetFrame(mfxFrameSurface1* pSurf)
 			h = pInfo.Height;
 		}
 
+		if (w > 2048)
+		{
+			printf("[DEBUG]--->CEncodingPipeline::GetFrame cw = %d,w = %d\r\n", pInfo.CropW,pInfo.Width);
+			return MFX_ERR_UNSUPPORTED;
+		}
+
+
+		//printf("[DEBUG]--->CEncodingPipeline::GetFrame cw=%d,ch=%d,w=%d,h=%d pData.Pitch=%d\r\n",pInfo.CropW,pInfo.CropH,pInfo.Width,pInfo.Height,pData.Pitch);
+		//printf("[DEBUG]--->CEncodingPipeline::GetFrame X = %d,Y = %d\r\n", pInfo.CropX,pInfo.CropY);
+		mfxU32 nBytesPerPixel = (pInfo.FourCC == MFX_FOURCC_P010 || pInfo.FourCC == MFX_FOURCC_P210) ? 2 : 1;
+
 		if (MFX_FOURCC_NV12 == pInfo.FourCC)
 		{
 			pitch = pData.Pitch;
-			ptr_y = pData.Y + pInfo.CropX + pInfo.CropY * pData.Pitch;
+			ptr = pData.Y + pInfo.CropX + pInfo.CropY * pData.Pitch;
 
 			// read luminance plane
-			memcpy(ptr_y, pFrame->yuvBuf[0], pFrame->lumaHeight * pFrame->lumaWidth);
-#if 1
+			memcpy(ptr, pFrame->yuvBuf[0], pFrame->lumaHeight * pFrame->lumaWidth);
+
 			// read chroma planes
-			ptr_uv = pData.UV + pInfo.CropX + (pInfo.CropY / 2) * pitch;
+			ptr = pData.UV + pInfo.CropX + (pInfo.CropY / 2) * pitch;
+
 			int i32Len = pFrame->lumaHeight * pFrame->lumaWidth / 4;
-			mfxU8* u = new mfxU8[i32Len];
-			mfxU8* v = new mfxU8[i32Len];
+			mfxU8* u = new mfxU8[i32Len]; // maximum supported chroma width for nv12
+			mfxU8* v = new mfxU8[i32Len]; // maximum supported chroma width for nv12
 			memcpy(u, pFrame->yuvBuf[1], i32Len);
 			memcpy(v, pFrame->yuvBuf[2], i32Len);
-
 			for (i = 0; i < i32Len; i++)
 			{
-				ptr_uv[2 * i + 0] = u[i];
-				ptr_uv[2 * i + 1] = v[i];
+				ptr[2 * i + 0] = u[i];
+				ptr[2 * i + 1] = v[i];
 			}
 			if (u)delete u;
 			if (v)delete v;
-
-			//fwrite(ptr_y, 1, w * h, fou);
-			//fwrite(ptr_uv, 1, w * h >> 1, fou);
-#endif
 		}
-		//printf("[DEBUG]--->CEncodingPipeline::GetFrame Cnt---------------( 3 )\r\n");
+
 		if (pFrame->yuvBuf[0]) delete pFrame->yuvBuf[0];
 		if (pFrame->yuvBuf[1]) delete pFrame->yuvBuf[1];
 		if (pFrame->yuvBuf[2]) delete pFrame->yuvBuf[2];
 		if (pFrame) delete pFrame;
-
 		sts = MFX_ERR_NONE;
 	}
 	else
 	{
+		//printf("[DEBUG]--->CEncodingPipeline::GetFrame more =  %d\r\n", more++);
 		sts = MFX_ERR_MORE_DATA;
 	}
 	return sts;
 }
-
-mfxStatus CEncodingPipeline::GetBitstreams(mfxBitstream* &pBitstream)
-{
-	return (m_FileWriters.first)->GetBitstream(pBitstream);
-}
-
 
 mfxStatus CEncodingPipeline::LoadNextFrame(mfxFrameSurface1* pSurf)
 {
